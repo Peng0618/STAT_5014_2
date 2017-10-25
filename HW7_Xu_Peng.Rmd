@@ -1,0 +1,206 @@
+---
+title: "Homework 7"
+author: "Peng Xu"
+date: "10/24/2017"
+output: html_notebook
+---
+
+```{r, include=FALSE}
+library(foreach)
+library(doParallel)
+library(knitr)
+Sys.setenv(LANG = "en")
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Question 2
+```{r}
+set.seed(12345)
+y <- rnorm(n = 1e+07, mean = 1, sd = 1)
+```
+
+## Part a
+for loop:
+```{r}
+system.time({
+YMean <- mean(y)
+SST <- 0
+for(i in 1:length(y)){
+    SST <- SST + (y[i]-YMean)^2
+}
+})
+SST2
+```
+
+## Part b
+vector operation:
+```{r}
+YMean <- mean(y)
+perSS <- function(x){
+    SS <- (x-YMean)^2
+    return(SS)
+}
+system.time({
+    result <- apply(as.matrix(y),MARGIN = 2,perSS)
+    SST2 <- sum(result)
+})
+SST2
+```
+
+## Part c
+dopar:
+```{r}
+registerDoParallel(cores = 2)
+set.seed(12345)
+y <- rnorm(n = 1e+07, mean = 1, sd = 1)
+YMean <- mean(y)
+
+system.time({
+  Indivi <- foreach(b = 1:1e+07, .combine = "c") %dopar% {
+    (y[b]-YMean)^2
+  }
+  SST <- sum(Indivi)
+})
+
+SST
+stopImplicitCluster()
+
+```
+
+## Part d
+parSapply:
+```{r}
+cl <- makeCluster(2)
+
+set.seed(12345)
+y <- rnorm(n = 1e+07, mean = 1, sd = 1)
+YMean <- mean(y)
+
+
+system.time({
+  clusterExport(cl,"YMean")
+  Indivi_2 <- parSapply(cl, 1:1e+07,
+          function(x,y) {
+            (y[x]-YMean)^2
+            #return(SS)
+            }, y)
+})
+SST <- sum(Indivi_2)
+SST
+stopCluster(cl)
+```
+
+# Question 3
+In this problem, the step size $\alpha$ is not specified. So here the parallelization is used to find a value for $\alpha$. The results show that the differences between those choices are not significant. 
+```{r}
+set.seed(1256)
+theta <- as.matrix(c(1, 2), nrow = 2)
+X <- cbind(1, rep(1:10, 10))
+h <- X %*% theta + rnorm(100, 0, 0.2)
+```
+
+```{r}
+theta0_init <- 0
+theta1_init <- 1
+theta0_temp <- theta0_init
+theta1_temp <- theta1_init
+theta0_temp2 <- theta0_init
+theta1_temp2 <- theta1_init
+thres0 <- 0.0001  # the tolerance value
+thres1 <- 0.0001
+#alpha <- 0.05     # the step size
+m <- length(h)
+error0 <- 1
+error1 <- 1
+
+registerDoParallel(cores = 2)
+
+  GDResult <- foreach(b = 1:10, .combine = "cbind") %dopar% {
+    alpha <- b/1000+0.01
+    while(error0 > thres0 | error1 > thres1){
+      theta_temp <- as.matrix(c(theta0_temp, theta1_temp), nrow = 2)
+      theta0_temp2 <- theta0_temp - alpha*sum(X %*% theta_temp - h)/m
+      theta1_temp2 <- theta1_temp - alpha*sum((X %*% theta_temp - h)*X[,2])/m
+      theta0_temp2
+      theta1_temp2
+      
+      error0 <- abs(theta0_temp2 - theta0_temp)
+      error1 <- abs(theta1_temp2 - theta1_temp)
+      
+      theta0_temp <- theta0_temp2
+      theta1_temp <- theta1_temp2
+    }
+    return(c(theta0_temp2,theta1_temp2))
+  }
+  
+stopImplicitCluster()
+GDResult
+```
+
+```{r}
+model <- lm(h~0+X)
+summary(model)
+```
+
+
+# Question 4
+## Part a
+The parallelization method is used to repeat the bootstrap sampling process.
+```{r}
+set.seed(1267)
+n <- 200
+X <- 1/cbind(1, rt(n, df = 1), rt(n, df = 1), rt(n, df = 1))
+beta <- c(1, 2, 3, 0)
+Y <- X %*% beta + rnorm(100, sd = 3)
+```
+
+```{r}
+List <- 1:200
+
+#set.seed(123)
+system.time({
+  registerDoParallel(cores = 2)
+  BootResult <- foreach(b = 1:10000,.combine = 'cbind') %dopar% {
+    SampleSize <- 200
+    Index <- sample(List, SampleSize, replace = TRUE)
+    BootSample <- cbind(X[Index,],Y[Index])
+    XBoot <- BootSample[,1:4]
+    YBoot <- BootSample[,5]
+  
+    Beta_hat <- solve(t(XBoot)%*%XBoot)%*%t(XBoot)%*%YBoot
+    Sigma <- 1/(SampleSize-4)*t(YBoot)%*%(diag(SampleSize)-XBoot%*%solve(t(XBoot)%*%XBoot)%*%t(XBoot))%*%YBoot
+    Estimators <- rbind(Beta_hat,Sigma)
+    return(Estimators)
+  }
+  stopImplicitCluster()
+})
+```
+
+## Part b
+```{r}
+
+Mean <- apply(BootResult,MARGIN = 1, mean)
+Var <- apply(BootResult, MARGIN = 1, var)
+
+FinalResult <- data.frame(Mean = Mean, Var = Var)
+rownames(FinalResult) <- c('Beta0','Beta1','Beta2','Beta3','Variance')
+knitr::kable(FinalResult, caption="Estimators")
+
+```
+
+## Part c
+```{r}
+par(mfrow = c(2,2))
+hist(BootResult[1,],breaks = 15, freq = FALSE, main = 'Hist of Beta0')
+hist(BootResult[2,],breaks = 25, freq = FALSE, main = 'Hist of Beta1')
+hist(BootResult[3,],breaks = 25, freq = FALSE, main = 'Hist of Beta2')
+hist(BootResult[4,],breaks = 30, freq = FALSE, main = 'Hist of Beta3')
+```
+
+
+
+
+
+
+
